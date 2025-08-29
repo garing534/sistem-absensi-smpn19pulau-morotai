@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aplikasi Absensi Siswa</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Libraries for PDF, Excel (CSV), and QR Scanning -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <!-- Libraries for Zipping Files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        @keyframes slideInLeft { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-in-out; }
+        .animate-slideUp { animation: slideUp 0.3s ease-out; }
+        .animate-slideIn { animation: slideIn 0.5s ease-out forwards; }
+        .animate-slideInLeft { animation: slideInLeft 0.3s ease-out forwards; }
+        .hidden-file-input {
+            position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+            overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+        }
+        @keyframes pulse-light {
+            0%, 100% { fill: #FBBF24; }
+            50% { fill: #F59E0B; }
+        }
+        .school-window-light {
+            animation: pulse-light 3s infinite;
+        }
+        /* Animasi untuk kartu mapel */
+        .subject-card {
+            animation: slideUp 0.5s ease-out forwards;
+            opacity: 0;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- HELPER FUNCTIONS ---
+        const getFromLocalStorage = (key, defaultValue) => {
+            try {
+                const item = window.localStorage.getItem(key);
+                return item ? JSON.parse(item) : defaultValue;
+            } catch (error) { console.error(`Error reading localStorage key “${key}”:`, error); return defaultValue; }
+        };
+        const setInLocalStorage = (key, value) => {
+            try { window.localStorage.setItem(key, JSON.stringify(value)); } 
+            catch (error) { console.error(`Error writing to localStorage key “${key}”:`, error); }
+        };
+        const toTitleCase = (str) => str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+
+        // --- COMPONENTS ---
+        const QrScanner = ({ onScanSuccess, onScanFailure, showNotification }) => {
+            const scannerRef = useRef(null);
+            const isPausedRef = useRef(false);
+
+            const handleSuccess = (decodedText, decodedResult) => {
+                if (isPausedRef.current) return;
+                isPausedRef.current = true;
+                onScanSuccess(decodedText, decodedResult);
+                setTimeout(() => { isPausedRef.current = false; }, 2000);
+            };
+
+            useEffect(() => {
+                if (typeof window !== 'undefined' && window.Html5Qrcode) {
+                    const qrCodeScanner = new Html5Qrcode("reader");
+                    scannerRef.current = qrCodeScanner;
+                    const config = { fps: 5, qrbox: { width: 250, height: 250 } };
+                    
+                    qrCodeScanner.start({ facingMode: "environment" }, config, handleSuccess, onScanFailure)
+                        .catch(err => {
+                            console.error("Tidak dapat memulai pemindaian.", err);
+                            showNotification("Gagal memulai kamera. Pastikan Anda memberikan izin.", "error");
+                            onScanFailure(err);
+                        });
+                }
+                
+                return () => {
+                    if (scannerRef.current && scannerRef.current.isScanning) {
+                        scannerRef.current.stop()
+                            .then(() => console.log("QR Scanner stopped successfully."))
+                            .catch(err => console.error("Gagal menghentikan pemindai dengan benar.", err));
+                    }
+                };
+            }, [onScanFailure, showNotification]);
+
+            return <div id="reader" className="w-full h-full"></div>;
+        };
+        
+        const LoginPage = ({ onLogin, showNotification }) => {
+            const [username, setUsername] = useState(getFromLocalStorage('savedUsername', ''));
+            const [password, setPassword] = useState('');
+            const [rememberMe, setRememberMe] = useState(!!getFromLocalStorage('savedUsername', ''));
+            const [isForgotPassword, setIsForgotPassword] = useState(false);
+            const [nspn, setNspn] = useState('');
+
+            const correctUsername = 'guru';
+            const correctPassword = 'smpn19pm';
+            const correctNspn = '60205576';
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (username === correctUsername && password === correctPassword) {
+                    if (rememberMe) {
+                        setInLocalStorage('savedUsername', username);
+                    } else {
+                        localStorage.removeItem('savedUsername');
+                    }
+                    onLogin();
+                } else {
+                    showNotification('Username atau Password salah!', 'error');
+                }
+            };
+
+            const handleNspnSubmit = (e) => {
+                e.preventDefault();
+                if (nspn === correctNspn) {
+                    showNotification(`Password Anda adalah: ${correctPassword}`, 'success');
+                    setIsForgotPassword(false);
+                    setNspn('');
+                } else {
+                    showNotification('NSPN tidak valid!', 'error');
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200 p-4">
+                    <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8 space-y-6 animate-fadeIn">
+                        <div className="text-center space-y-2">
+                            <svg className="w-24 h-24 mx-auto text-blue-600" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M4 21V10.0833C4 9.53681 4.21071 9.01229 4.58579 8.63722L11.5858 1.63722C11.8201 1.40293 12.1799 1.40293 12.4142 1.63722L19.4142 8.63722C19.7893 9.01229 20 9.53681 20 10.0833V21H15V15C15 14.4477 14.5523 14 14 14H10C9.44772 14 9 14.4477 9 15V21H4Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                <rect x="11" y="17" width="2" height="2" className="school-window-light"/>
+                            </svg>
+                            <h1 className="text-3xl font-bold text-gray-800">Selamat Datang</h1>
+                            <p className="text-gray-600">Sistem Kehadiran Siswa<br/><b>SMP NEGERI 19 PULAU MOROTAI</b></p>
+                        </div>
+                        
+                        {!isForgotPassword ? (
+                            <form onSubmit={handleLogin} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Username</label>
+                                    <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Password</label>
+                                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm" required />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center">
+                                        <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                                        <label className="ml-2 block text-sm text-gray-900">Ingat Saya</label>
+                                    </div>
+                                    <a href="#" onClick={(e) => { e.preventDefault(); setIsForgotPassword(true); }} className="text-sm text-blue-600 hover:underline">Lupa Password?</a>
+                                </div>
+                                <button type="submit" className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">Login</button>
+                            </form>
+                        ) : (
+                            <form onSubmit={handleNspnSubmit} className="space-y-4 animate-fadeIn">
+                                <p className="text-sm text-center text-gray-600">Masukkan NSPN sekolah untuk melihat password.</p>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">NSPN</label>
+                                    <input type="text" value={nspn} onChange={(e) => setNspn(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm" required />
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <button type="button" onClick={() => setIsForgotPassword(false)} className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Kembali</button>
+                                    <button type="submit" className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700">Submit</button>
+                                </div>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const MainApp = ({ onLogout, showNotification }) => {
+            // --- STATE MANAGEMENT ---
+            const [students, setStudents] = useState(() => getFromLocalStorage("students", [
+                // Data siswa tetap sama
+                { nis: "0122028589", name: "Adinda Putri Hontong", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0122028589" },
+                { nis: "0129129457", name: "Aksel Panca Hontong", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0129129457" },
+                { nis: "0124869598", name: "Atwin Dalawir", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0124869598" },
+                { nis: "3125919756", name: "Brian Edfil Tambariki", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3125919756" },
+                { nis: "3126120421", name: "Cantika Mauren Senaen", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3126120421" },
+                { nis: "3131398074", name: "Chika Kristiani Wauran", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3131398074" },
+                { nis: "3124920007", name: "Dalti Fortisimo Totoda", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3124920007" },
+                { nis: "3128222784", name: "Febri Cristabela Taarungan", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3128222784" },
+                { nis: "3129229639", name: "Feril Polulu", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3129229639" },
+                { nis: "0121163385", name: "Feronika Faradila Dama", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0121163385" },
+                { nis: "3132527074", name: "Fortinatus Totoda", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3132527074" },
+                { nis: "0125164272", name: "Friki Pontoh", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0125164272" },
+                { nis: "3134922801", name: "Geovani Hontong", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3134922801" },
+                { nis: "3128079450", name: "Jeahzyline Christie Seng", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3128079450" },
+                { nis: "3125961839", name: "Jerry Kotambunan", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3125961839" },
+                { nis: "0122018170", name: "Jufensio Malenehe", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0122018170" },
+                { nis: "3136758976", name: "Leski Rifandi Parera", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3136758976" },
+                { nis: "0128518481", name: "Marsia Malenehe", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0128518481" },
+                { nis: "0128949224", name: "Marsya Malenehe", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0128949224" },
+                { nis: "0129604691", name: "Meis Yeripka Lamorahan", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0129604691" },
+                { nis: "3131568623", name: "Meisa Ubis", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3131568623" },
+                { nis: "3126984849", name: "Norfendi Sangelorang", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3126984849" },
+                { nis: "0122793721", name: "Pinkan Mahadun", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0122793721" },
+                { nis: "0124264076", name: "Refli Vinli Jali", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0124264076" },
+                { nis: "3129327871", name: "Rivaldo .M. Tunang", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3129327871" },
+                { nis: "3122626904", name: "Rizky Putra Pratama", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3122626904" },
+                { nis: "3121077382", name: "Trisiska Mandalika", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3121077382" },
+                { nis: "0123477251", name: "Yeng Side", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0123477251" },
+                { nis: "3137891345", name: "Yesaya Manggiwu MamentiwalO", class: "7", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3137891345" },
+                { nis: "0115581467", name: "Andres Tamahiwu", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0115581467" },
+                { nis: "0114764052", name: "Ariki Makaluase Senduk", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0114764052" },
+                { nis: "0113995778", name: "Bintang Kasih Senduk", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0113995778" },
+                { nis: "0102118844", name: "Fendrik Side", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0102118844" },
+                { nis: "0117760154", name: "Frengklin Behuku", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0117760154" },
+                { nis: "0112690642", name: "Geofreey Paul Mabiang", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0112690642" },
+                { nis: "0117228068", name: "Glen Lope", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0117228068" },
+                { nis: "0111290147", name: "Herlino Sasue", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0111290147" },
+                { nis: "0119374640", name: "Imanuel J. Martin", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119374640" },
+                { nis: "0119136630", name: "Julia Kesia Siwi", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119136630" },
+                { nis: "0108141001", name: "Kelfin Ixel Mendiahi", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0108141001" },
+                { nis: "0124387903", name: "Kristi Amelia Malempi", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0124387903" },
+                { nis: "0116620688", name: "Lisar E.P. Kotambunan", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0116620688" },
+                { nis: "0114080507", name: "Marhein Hamel", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0114080507" },
+                { nis: "0114431366", name: "Newel Krisno Seng", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0114431366" },
+                { nis: "0115195886", name: "Olvin Dalawir", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0115195886" },
+                { nis: "0123275753", name: "Regxi Juandri Manise", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0123275753" },
+                { nis: "0114249512", name: "Revael Geril Lahea", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0114249512" },
+                { nis: "0119366132", name: "Ricardo Salawati", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119366132" },
+                { nis: "0126558475", name: "Ridvan Trivanto Manihing", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0126558475" },
+                { nis: "3128185246", name: "Sandri Panganton", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3128185246" },
+                { nis: "0115838048", name: "Siren Side", class: "8", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0115838048" },
+                { nis: "0101463893", name: "Anggreini A. Mendiahi", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0101463893" },
+                { nis: "0098005118", name: "Athventus Dipipi", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0098005118" },
+                { nis: "0095943609", name: "Brian Daniel Makawimbang", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0095943609" },
+                { nis: "0096384014", name: "Delon Katiandagho", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0096384014" },
+                { nis: "0102871128", name: "Diego T. Martin", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0102871128" },
+                { nis: "3115509167", name: "Edwin Papangge", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3115509167" },
+                { nis: "0105597231", name: "Ikzel Pantolosang", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0105597231" },
+                { nis: "0116499428", name: "Jisel Hontong", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0116499428" },
+                { nis: "0104520042", name: "Katrin Makawimbang", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0104520042" },
+                { nis: "0116394889", name: "Kris Steven Kapelo", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0116394889" },
+                { nis: "0119234894", name: "Krisna Fanuel Pebukiran", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119234894" },
+                { nis: "0113951251", name: "Leonel Dalawir", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0113951251" },
+                { nis: "0108963421", name: "Marik Kaluando", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0108963421" },
+                { nis: "0119246576", name: "Marlince Tendaunusa", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119246576" },
+                { nis: "3112209406", name: "Marsela Dawe", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3112209406" },
+                { nis: "0117806301", name: "Marselino Senduk", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0117806301" },
+                { nis: "0102992887", name: "Marvin Yosafat Makawimbang", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0102992887" },
+                { nis: "0119315419", name: "Michella Malenehe", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119315419" },
+                { nis: "0114576447", name: "Nehemia Dalawir", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0114576447" },
+                { nis: "0101228965", name: "Nigel Excel Magama", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0101228965" },
+                { nis: "3098881869", name: "Radit Mangerongkonda", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=3098881869" },
+                { nis: "0106019529", name: "Sergio Palar", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0106019529" },
+                { nis: "0119311803", name: "Sintha Malenehe", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0119311803" },
+                { nis: "0106089715", name: "Stif Arsalin Garata", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0106089715" },
+                { nis: "0103108647", name: "Yola Yulis", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0103108647" },
+                { nis: "0102932818", name: "Yulientin Makawimbang", class: "9", qrCode: "https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=0102932818" },
+            ]));
+            const [subjects, setSubjects] = useState(() => getFromLocalStorage("subjects", [
+                "IPA", "IPS", "PJOK", "PAK", "PKN", "Prakarya", "Informatika", 
+                "Bahasa Indonesia", "Bahasa Inggris", "Matematika", "Seni Budaya"
+            ]));
+            const [attendance, setAttendance] = useState(() => getFromLocalStorage("attendance", []));
+            const [customTeacherName, setCustomTeacherName] = useState("Guru Pengajar");
+            const [menu, setMenu] = useState(() => getFromLocalStorage("lastMenu", "dashboard"));
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [modalType, setModalType] = useState("");
+            const [currentStudent, setCurrentStudent] = useState(null);
+            const [currentSubject, setCurrentSubject] = useState("");
+            const [scanMode, setScanMode] = useState(false);
+            const [scanResult, setScanResult] = useState("");
+            const [scanSubject, setScanSubject] = useState("");
+            const [recentlyScanned, setRecentlyScanned] = useState([]);
+            const [filterClass, setFilterClass] = useState("");
+            const [filterSubject, setFilterSubject] = useState("");
+            const [filterDate, setFilterDate] = useState(new Date().toISOString().split("T")[0]);
+            const fileInputRef = useRef(null);
+            const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+            
+            // State untuk absensi manual baru
+            const [manualClass, setManualClass] = useState('');
+            const [manualSubject, setManualSubject] = useState('');
+            const [manualDate, setManualDate] = useState(new Date().toISOString().split("T")[0]);
+            const [classAttendance, setClassAttendance] = useState([]);
+
+            // --- EFFECTS ---
+            useEffect(() => { setInLocalStorage("students", students); }, [students]);
+            useEffect(() => { setInLocalStorage("subjects", subjects); }, [subjects]);
+            useEffect(() => { setInLocalStorage("attendance", attendance); }, [attendance]);
+            useEffect(() => { setInLocalStorage("lastMenu", menu); }, [menu]);
+
+            // Efek untuk mengupdate daftar siswa saat kelas dipilih
+            useEffect(() => {
+                if (manualClass) {
+                    const studentsInClass = students.filter(s => s.class === manualClass);
+                    setClassAttendance(studentsInClass.map(s => ({
+                        nis: s.nis,
+                        name: s.name,
+                        class: s.class,
+                        status: 'hadir' // Default status
+                    })));
+                } else {
+                    setClassAttendance([]);
+                }
+            }, [manualClass, students]);
+
+
+            // --- DERIVED STATE ---
+            const totalStudents = students.length;
+            const todayAttendance = useMemo(() => attendance.filter(a => a.date === new Date().toISOString().split("T")[0]), [attendance]);
+            const presentToday = todayAttendance.filter(a => a.status === 'hadir').length;
+            const presentRate = totalStudents > 0 ? Math.round((presentToday / totalStudents) * 100) : 0;
+            const attendanceByClassAndSubject = useMemo(() => {
+                return todayAttendance.reduce((acc, record) => {
+                    const { class: studentClass, subject } = record;
+                    if (!acc[studentClass]) acc[studentClass] = {};
+                    if (!acc[studentClass][subject]) acc[studentClass][subject] = 0;
+                    if(record.status === 'hadir') acc[studentClass][subject]++;
+                    return acc;
+                }, {});
+            }, [todayAttendance]);
+
+            // --- FUNCTIONS ---
+            const openModal = (type, data = null) => {
+                setModalType(type);
+                if (type === "edit" || type === "delete") setCurrentStudent(data);
+                if (type === "deleteSubject") setCurrentSubject(data);
+                setIsModalOpen(true);
+            };
+            const closeModal = () => setIsModalOpen(false);
+
+            const handleStudentSubmit = (e) => {
+                e.preventDefault();
+                const { nis, name, class: studentClass } = e.target.elements;
+                const newStudent = {
+                    nis: nis.value, name: name.value, class: studentClass.value,
+                    qrCode: `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${nis.value}`
+                };
+                if (modalType === "edit") {
+                    setStudents(students.map(s => s.nis === currentStudent.nis ? newStudent : s));
+                    showNotification("Data siswa diperbarui!");
+                } else {
+                    if (students.some(s => s.nis === newStudent.nis)) { showNotification("NIS sudah ada.", "error"); return; }
+                    setStudents(prev => [...prev, newStudent].sort((a, b) => a.name.localeCompare(b.name)));
+                    showNotification("Siswa baru ditambahkan!");
+                }
+                closeModal();
+            };
+            
+            const handleSubjectSubmit = (e) => {
+                e.preventDefault();
+                const newSubject = e.target.subject.value.trim();
+                if (newSubject && !subjects.includes(newSubject)) {
+                    setSubjects(prev => [...prev, newSubject].sort());
+                    showNotification("Mata pelajaran ditambahkan!");
+                } else {
+                    showNotification("Mata pelajaran sudah ada.", "error");
+                }
+                closeModal();
+            };
+
+            const deleteStudent = (nis) => {
+                setStudents(students.filter(s => s.nis !== nis));
+                setAttendance(attendance.filter(a => a.nis !== nis));
+                showNotification("Data siswa dihapus.", "warning");
+                closeModal();
+            };
+            
+            const deleteSubject = (subjectToDelete) => {
+                setSubjects(subjects.filter(s => s !== subjectToDelete));
+                showNotification("Mata pelajaran dihapus.", "warning");
+                closeModal();
+            };
+            
+            const onScanSuccess = (decodedText) => {
+                const student = students.find(s => s.nis === decodedText);
+                if (student) {
+                    const today = new Date().toISOString().split("T")[0];
+                    const alreadyAttended = attendance.some(a => a.nis === student.nis && a.date === today && a.subject === scanSubject);
+                    const justScanned = recentlyScanned.some(s => s.nis === student.nis);
+
+                    if (alreadyAttended || justScanned) { 
+                        setScanResult(`[DUPLIKAT] ${student.name} sudah diabsen.`); 
+                    } else {
+                        const newRecord = { nis: student.nis, name: student.name, class: student.class, subject: scanSubject, status: "hadir", date: today };
+                        setAttendance(prev => [...prev, newRecord]);
+                        setRecentlyScanned(prev => [newRecord, ...prev]);
+                        setScanResult(`[BERHASIL] ${student.name} dicatat.`);
+                    }
+                } else { 
+                    setScanResult(`[GAGAL] Siswa dengan NIS "${decodedText}" tidak ditemukan.`); 
+                }
+            };
+            
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                Papa.parse(file, {
+                    header: true, skipEmptyLines: true,
+                    complete: (results) => {
+                        const newStudents = [];
+                        const existingNis = new Set(students.map(s => s.nis));
+                        let addedCount = 0;
+                        results.data.forEach(row => {
+                            if (row.nis && row.nama && row.kelas && !existingNis.has(row.nis)) {
+                                newStudents.push({
+                                    nis: row.nis, name: toTitleCase(row.nama), class: row.kelas,
+                                    qrCode: `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${row.nis}`
+                                });
+                                existingNis.add(row.nis);
+                                addedCount++;
+                            }
+                        });
+                        setStudents(prev => [...prev, ...newStudents].sort((a,b) => a.name.localeCompare(b.name)));
+                        showNotification(`${addedCount} siswa berhasil diimpor!`);
+                    },
+                    error: (error) => { showNotification("Gagal memproses file.", "error"); }
+                });
+                event.target.value = null;
+            };
+
+            const filteredAttendance = useMemo(() => attendance.filter(att => 
+                (!filterClass || att.class === filterClass) &&
+                (!filterSubject || att.subject === filterSubject) &&
+                (!filterDate || att.date === filterDate)
+            ), [attendance, filterClass, filterSubject, filterDate]);
+
+            const exportToCSV = () => {
+                let csvContent = "data:text/csv;charset=utf-8,";
+                csvContent += `Rekapan Kehadiran Siswa\n`;
+                csvContent += `Nama Guru:,${customTeacherName}\n`;
+                csvContent += `Tanggal Laporan:,${new Date().toLocaleDateString('id-ID')}\n\n`;
+                csvContent += "NIS,Nama,Kelas,Mata Pelajaran,Status,Tanggal\n";
+                filteredAttendance.forEach(att => {
+                    csvContent += `${att.nis},"${att.name}",${att.class},"${att.subject}",${att.status},${att.date}\n`;
+                });
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", "rekapan_kehadiran.csv");
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showNotification("Laporan CSV berhasil diunduh!");
+            };
+
+            const exportToPDF = () => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+                
+                doc.setFontSize(14);
+                doc.text("Rekapan Kehadiran Siswa SMP NEGERI 19 PULAU MOROTAI", 14, 16);
+                
+                doc.setFontSize(10);
+                doc.text(`Guru: ${customTeacherName}`, 14, 24);
+                
+                let filterInfo = `Tanggal: ${filterDate || 'Semua'}`;
+                if (filterSubject) {
+                    filterInfo += ` | Mapel: ${filterSubject}`;
+                }
+                if (filterClass) {
+                    filterInfo += ` | Kelas: ${filterClass}`;
+                }
+                doc.text(filterInfo, 14, 30);
+
+                const tableColumn = ["NIS", "Nama", "Kelas", "Mapel", "Status", "Tanggal"];
+                const tableRows = filteredAttendance.map(att => [att.nis, att.name, att.class, att.subject, att.status, att.date]);
+                
+                doc.autoTable({ head: [tableColumn], body: tableRows, startY: 36 });
+                
+                doc.save(`rekapan_${filterDate || 'semua'}.pdf`);
+                showNotification("Laporan PDF berhasil diunduh!");
+            };
+            
+            const handleDownloadQR = (student) => {
+                fetch(student.qrCode)
+                    .then(response => response.blob())
+                    .then(blob => {
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.style.display = 'none';
+                        a.href = url;
+                        a.download = `qr-${student.nis}.png`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                    })
+                    .catch(() => showNotification('Gagal mengunduh QR Code', 'error'));
+            };
+
+            const handleDownloadAllQRs = async () => {
+                showNotification("Mempersiapkan file ZIP... Mohon tunggu.", "info");
+
+                if (typeof JSZip === 'undefined' || typeof saveAs === 'undefined') {
+                    showNotification("Gagal memuat library untuk ZIP.", "error");
+                    return;
+                }
+
+                const zip = new JSZip();
+
+                const promises = students.map(student => {
+                    return fetch(student.qrCode)
+                        .then(response => {
+                            if (!response.ok) throw new Error(`Gagal fetch QR untuk ${student.name}`);
+                            return response.blob();
+                        })
+                        .then(blob => {
+                            const fileName = `qr-${student.nis}-${student.name.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
+                            zip.file(fileName, blob);
+                        })
+                        .catch(error => console.error(error));
+                });
+
+                try {
+                    await Promise.all(promises);
+                    const content = await zip.generateAsync({ type: "blob" });
+                    saveAs(content, "semua_qr_siswa.zip");
+                    showNotification("File ZIP berhasil diunduh!", "success");
+                } catch (error) {
+                    showNotification("Gagal membuat file ZIP.", "error");
+                }
+            };
+
+            const handleClassAttendanceChange = (nis, newStatus) => {
+                setClassAttendance(prev => prev.map(student => 
+                    student.nis === nis ? { ...student, status: newStatus } : student
+                ));
+            };
+
+            const handleSaveClassAttendance = () => {
+                if (!manualSubject) {
+                    showNotification("Silakan pilih mata pelajaran terlebih dahulu.", "error");
+                    return;
+                }
+                if (classAttendance.length === 0) {
+                    showNotification("Tidak ada siswa di kelas ini untuk diabsen.", "info");
+                    return;
+                }
+
+                const newAttendanceRecords = [];
+                let alreadyExistsCount = 0;
+
+                classAttendance.forEach(student => {
+                    const alreadyExists = attendance.some(a => 
+                        a.nis === student.nis && 
+                        a.date === manualDate && 
+                        a.subject === manualSubject
+                    );
+
+                    if (!alreadyExists) {
+                        newAttendanceRecords.push({
+                            ...student,
+                            subject: manualSubject,
+                            date: manualDate
+                        });
+                    } else {
+                        alreadyExistsCount++;
+                    }
+                });
+
+                // Update state if there are new records
+                if (newAttendanceRecords.length > 0) {
+                    setAttendance(prev => [...prev, ...newAttendanceRecords]);
+                }
+
+                // Determine the notification message
+                if (newAttendanceRecords.length > 0 && alreadyExistsCount > 0) {
+                    showNotification(`${newAttendanceRecords.length} data disimpan. ${alreadyExistsCount} siswa sudah diabsen.`, "success");
+                } else if (newAttendanceRecords.length > 0 && alreadyExistsCount === 0) {
+                    showNotification(`${newAttendanceRecords.length} data kehadiran berhasil disimpan.`, "success");
+                } else if (newAttendanceRecords.length === 0 && alreadyExistsCount > 0) {
+                    showNotification("Semua siswa di kelas ini sudah diabsen untuk mapel ini.", "info");
+                }
+            };
+            
+            // --- RENDER ---
+            return (
+                <div className="min-h-screen font-sans bg-gray-50">
+                    {isMobileMenuOpen && (
+                        <div className="fixed inset-0 z-50 flex">
+                            <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setIsMobileMenuOpen(false)}></div>
+                            <div className="relative w-64 bg-white h-full shadow-xl animate-slideInLeft">
+                                <div className="p-4 border-b">
+                                    <h2 className="font-bold text-lg">Menu Navigasi</h2>
+                                </div>
+                                <nav className="p-4 space-y-2">
+                                    {["dashboard", "students", "subjects", "attendance", "reports"].map((item) => (
+                                        <button key={item} onClick={() => { setMenu(item); setIsMobileMenuOpen(false); }}
+                                        className={`w-full text-left px-4 py-2 rounded-lg font-medium transition-all duration-300 capitalize ${
+                                            menu === item ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-blue-50"
+                                        }`}>
+                                        {item === "students" ? "Data Siswa" : item === "subjects" ? "Mapel" : item === "reports" ? "Rekapan" : item}
+                                        </button>
+                                    ))}
+                                    <button onClick={onLogout} className="w-full text-left px-4 py-2 rounded-lg font-medium transition-all duration-300 text-red-600 hover:bg-red-50">Logout</button>
+                                </nav>
+                            </div>
+                        </div>
+                    )}
+
+                    <header className="bg-white shadow-md sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                            <div className="flex justify-between items-center py-3">
+                                <div className="flex items-center space-x-3">
+                                    <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden p-2 rounded-md text-gray-600 hover:bg-gray-100">
+                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+                                    </button>
+                                    <div className="flex items-center space-x-3">
+                                        <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
+                                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                        </div>
+                                        <div>
+                                            <h1 className="text-xl font-bold text-gray-800">Sistem Absensi</h1>
+                                            <p className="text-sm text-gray-500">SMP NEGERI 19 PULAU MOROTAI</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <nav className="hidden md:flex space-x-2">
+                                    {["dashboard", "students", "subjects", "attendance", "reports"].map((item) => (
+                                        <button key={item} onClick={() => setMenu(item)}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-all duration-300 capitalize ${
+                                            menu === item ? "bg-blue-600 text-white shadow-md" : "text-gray-600 hover:text-blue-600 hover:bg-blue-50"
+                                        }`}>
+                                        {item === "students" ? "Data Siswa" : item === "subjects" ? "Mapel" : item === "reports" ? "Rekapan" : item}
+                                        </button>
+                                    ))}
+                                     <button onClick={onLogout} className="px-4 py-2 rounded-lg font-medium transition-all duration-300 text-red-600 hover:bg-red-50">Logout</button>
+                                </nav>
+                            </div>
+                        </div>
+                    </header>
+                    
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                        {menu === "dashboard" && (
+                            <div className="animate-fadeIn">
+                                {/* Dashboard content remains the same */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                                    <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-500"><p className="text-sm font-medium text-gray-600">Total Siswa</p><p className="text-3xl font-bold text-gray-800">{totalStudents}</p></div>
+                                    <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-green-500"><p className="text-sm font-medium text-gray-600">Hadir Hari Ini</p><p className="text-3xl font-bold text-gray-800">{presentToday}</p></div>
+                                    <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-indigo-500"><p className="text-sm font-medium text-gray-600">Tingkat Kehadiran</p><p className="text-3xl font-bold text-gray-800">{presentRate}%</p></div>
+                                    <div className="bg-white rounded-xl shadow-md p-6 border-l-4 border-yellow-500"><p className="text-sm font-medium text-gray-600">Total Mapel</p><p className="text-3xl font-bold text-gray-800">{subjects.length}</p></div>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
+                                    <h3 className="text-lg font-bold text-gray-800 mb-4">Rincian Kehadiran Hari Ini</h3>
+                                    {Object.keys(attendanceByClassAndSubject).length > 0 ? (
+                                        <div className="space-y-4">
+                                            {Object.entries(attendanceByClassAndSubject).map(([className, subjectsData]) => (
+                                                <div key={className} className="p-4 border rounded-lg bg-gray-50">
+                                                    <h4 className="font-bold text-gray-700">Kelas {className}</h4>
+                                                    <ul className="mt-2 space-y-1 list-disc list-inside text-gray-600">
+                                                        {Object.entries(subjectsData).map(([subject, count]) => (
+                                                            <li key={subject}>
+                                                                {subject}: <span className="font-semibold text-green-700">{count} siswa hadir</span>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-center text-gray-500 py-4">Belum ada data kehadiran hari ini.</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        {menu === "students" && (
+                            <div className="animate-fadeIn">
+                                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                                    <h2 className="text-2xl font-bold text-gray-800">Manajemen Data Siswa</h2>
+                                    <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                                        <button onClick={handleDownloadAllQRs} className="flex-1 bg-purple-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-purple-700 shadow-sm transition-all flex items-center justify-center space-x-2">
+                                            <span>Unduh Semua QR</span>
+                                        </button>
+                                        <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden-file-input" accept=".csv" />
+                                        <button onClick={() => fileInputRef.current.click()} className="flex-1 bg-green-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-green-700 shadow-sm transition-all flex items-center justify-center space-x-2">
+                                            <span>Impor CSV</span>
+                                        </button>
+                                        <button onClick={() => openModal("add")} className="flex-1 bg-blue-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-blue-700 shadow-sm transition-all flex items-center justify-center space-x-2">
+                                            <span>Tambah Manual</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {students.map((student) => (
+                                        <div key={student.nis} className="bg-white rounded-xl shadow-md p-5 border border-gray-200 text-center">
+                                            <img src={`https://placehold.co/150x150/3B82F6/FFFFFF?text=${student.name.charAt(0)}`} onError={(e) => {e.target.onerror = null; e.target.src='https://placehold.co/150x150/CCCCCC/FFFFFF?text=Error'}} alt={student.name} className="w-24 h-24 rounded-full mx-auto mb-4 border-4 border-blue-100" />
+                                            <h3 className="text-lg font-bold text-gray-800">{student.name}</h3>
+                                            <p className="text-blue-600 font-medium">NIS: {student.nis}</p>
+                                            <p className="text-gray-600">Kelas: {student.class}</p>
+                                            <img src={student.qrCode} alt="QR Code" className="w-28 h-28 mx-auto border rounded-lg mt-4" onError={(e) => {e.target.onerror = null; e.target.src='https://placehold.co/128x128/CCCCCC/FFFFFF?text=QR+Error'}} />
+                                            <div className="flex justify-center space-x-2 mt-4">
+                                                <button onClick={() => openModal("edit", student)} className="bg-yellow-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-yellow-600">Edit</button>
+                                                <button onClick={() => openModal("delete", student)} className="bg-red-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-red-600">Hapus</button>
+                                                <button onClick={() => handleDownloadQR(student)} className="bg-green-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-green-600">Unduh</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {menu === "subjects" && (
+                            <div className="animate-fadeIn max-w-4xl mx-auto">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h2 className="text-2xl font-bold text-gray-800">Manajemen Mata Pelajaran</h2>
+                                    <button onClick={() => openModal("addSubject")} className="bg-indigo-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-indigo-700 shadow-sm flex items-center space-x-2 transition-transform duration-200 hover:scale-105">
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                                        <span>Tambah Mapel</span>
+                                    </button>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
+                                    <div className="flex flex-wrap gap-4">
+                                        {subjects.map((subject, index) => (
+                                            <div key={subject} className="subject-card bg-gray-100 rounded-lg p-4 flex flex-col items-center justify-center shadow-sm relative group transition-all duration-300 hover:shadow-lg hover:-translate-y-1" style={{ animationDelay: `${index * 50}ms` }}>
+                                                <span className="font-bold text-lg text-gray-700">{subject}</span>
+                                                <button onClick={() => openModal("deleteSubject", subject)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 text-xs">&times;</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {menu === "attendance" && (
+                           <div className="animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">Pencatatan Absensi</h2>
+                                <div className="bg-white rounded-xl shadow-xl p-6 border border-gray-200 max-w-4xl mx-auto">
+                                    {/* --- Bagian Scan QR --- */}
+                                    <div className="mb-8 p-4 border-b">
+                                        <h3 className="text-lg font-semibold text-center text-gray-700 mb-4">Absensi dengan Scan QR</h3>
+                                        <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
+                                            <select value={scanSubject} onChange={(e) => setScanSubject(e.target.value)} className="w-full sm:w-1/2 px-4 py-2 border border-gray-300 rounded-lg">
+                                                <option value="">Pilih Mapel Dulu...</option>
+                                                {subjects.map((s) => <option key={s} value={s}>{s}</option>)}
+                                            </select>
+                                            <button onClick={() => { if(scanSubject) setScanMode(true); else showNotification("Pilih mata pelajaran terlebih dahulu!", "error"); }} className="w-full sm:w-auto bg-green-600 text-white py-2 px-6 rounded-lg font-semibold hover:bg-green-700 shadow-sm disabled:bg-gray-400 flex items-center justify-center space-x-2" disabled={!scanSubject}>
+                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                                <span>Buka Kamera</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* --- Bagian Input Manual Baru --- */}
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-center text-gray-700 mb-4">Input Manual Per Kelas</h3>
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                                            <select value={manualClass} onChange={(e) => setManualClass(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+                                                <option value="">Pilih Kelas</option>
+                                                <option value="7">Kelas 7</option>
+                                                <option value="8">Kelas 8</option>
+                                                <option value="9">Kelas 9</option>
+                                            </select>
+                                            <select value={manualSubject} onChange={(e) => setManualSubject(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg" required>
+                                                <option value="">Pilih Mata Pelajaran</option>
+                                                {subjects.map((s) => <option key={s} value={s}>{s}</option>)}
+                                            </select>
+                                            <input type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg" />
+                                        </div>
+
+                                        {manualClass && (
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full min-w-max text-sm text-left text-gray-500">
+                                                    <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                                                        <tr>
+                                                            <th scope="col" className="px-6 py-3">NIS</th>
+                                                            <th scope="col" className="px-6 py-3">Nama Siswa</th>
+                                                            <th scope="col" className="px-6 py-3 text-center">Status Kehadiran</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {classAttendance.map((student) => {
+                                                            const statuses = ['hadir', 'sakit', 'izin', 'alpha', 'kt'];
+                                                            return (
+                                                                <tr key={student.nis} className="bg-white border-b hover:bg-gray-50">
+                                                                    <td className="px-6 py-4">{student.nis}</td>
+                                                                    <th scope="row" className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">{student.name}</th>
+                                                                    <td className="px-6 py-4">
+                                                                        <div className="flex flex-wrap gap-1 justify-center">
+                                                                            {statuses.map(status => {
+                                                                                const isActive = student.status === status;
+                                                                                const colors = {
+                                                                                    hadir: 'bg-green-500 hover:bg-green-600 text-white',
+                                                                                    sakit: 'bg-yellow-500 hover:bg-yellow-600 text-white',
+                                                                                    izin: 'bg-blue-500 hover:bg-blue-600 text-white',
+                                                                                    alpha: 'bg-red-500 hover:bg-red-600 text-white',
+                                                                                    kt: 'bg-gray-500 hover:bg-gray-600 text-white',
+                                                                                };
+                                                                                const inactiveColors = 'bg-gray-200 hover:bg-gray-300 text-gray-700';
+                                                                                return (
+                                                                                    <button key={status} onClick={() => handleClassAttendanceChange(student.nis, status)}
+                                                                                        className={`px-2 py-1 text-xs font-semibold rounded-md transition-all duration-200 ${isActive ? colors[status] : inactiveColors}`}>
+                                                                                        {status.toUpperCase()}
+                                                                                    </button>
+                                                                                )
+                                                                            })}
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            )
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                                <button onClick={handleSaveClassAttendance} className="mt-4 w-full bg-blue-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-blue-700 shadow-sm">
+                                                    Simpan Absensi Kelas {manualClass}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                                {scanMode && (
+                                    <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+                                        <div className="bg-white rounded-xl shadow-xl p-6 border border-gray-200 max-w-lg w-full animate-slideUp">
+                                            <h3 className="text-lg font-bold text-gray-800 mb-2 text-center">Arahkan Kamera ke QR Code</h3>
+                                            <p className="text-center text-sm mb-4">Mata Pelajaran: <span className="font-bold">{scanSubject}</span></p>
+                                            <div className="w-full h-64 bg-gray-200 rounded-lg overflow-hidden relative">
+                                                <QrScanner 
+                                                    onScanSuccess={onScanSuccess} 
+                                                    onScanFailure={(error) => console.error("QR Scan Failure:", error)}
+                                                    showNotification={showNotification}
+                                                />
+                                            </div>
+                                            {scanResult && <p className={`mt-4 text-center font-medium p-3 rounded-lg ${scanResult.includes('BERHASIL') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>{scanResult}</p>}
+                                            <div className="mt-4">
+                                                <h4 className="font-bold text-sm text-gray-600">Baru Saja Dipindai:</h4>
+                                                <ul className="h-24 overflow-y-auto mt-1 space-y-1">
+                                                    {recentlyScanned.map((att, index) => (
+                                                        <li key={index} className="text-sm text-gray-700 bg-green-50 p-1 rounded">{att.name}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                            <button onClick={() => { setScanMode(false); setRecentlyScanned([]); setScanResult(''); }} className="mt-4 w-full bg-gray-500 text-white py-2 px-4 rounded-lg font-medium hover:bg-gray-600">Tutup Kamera</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {menu === "reports" && (
+                            <div className="animate-fadeIn">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">Rekapan Kehadiran</h2>
+                                <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200 mb-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 items-end">
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Nama Guru</label><input type="text" value={customTeacherName} onChange={(e) => setCustomTeacherName(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg" placeholder="Masukkan nama guru..."/></div>
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Kelas</label><select value={filterClass} onChange={(e) => setFilterClass(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">Semua</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></div>
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Mata Pelajaran</label><select value={filterSubject} onChange={(e) => setFilterSubject(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg"><option value="">Semua</option>{subjects.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Tanggal</label><input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-lg" /></div>
+                                        <div className="flex space-x-2">
+                                            <button onClick={exportToPDF} className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-700">PDF</button>
+                                            <button onClick={exportToCSV} className="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700">CSV</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-x-auto">
+                                    <table className="w-full min-w-max">
+                                        <thead><tr className="border-b bg-gray-50"><th className="py-3 px-4 text-left font-semibold text-gray-600">NIS</th><th className="py-3 px-4 text-left font-semibold text-gray-600">Nama</th><th className="py-3 px-4 text-left font-semibold text-gray-600">Kelas</th><th className="py-3 px-4 text-left font-semibold text-gray-600">Mapel</th><th className="py-3 px-4 text-left font-semibold text-gray-600">Status</th><th className="py-3 px-4 text-left font-semibold text-gray-600">Tanggal</th></tr></thead>
+                                        <tbody>
+                                            {filteredAttendance.length === 0 ? (
+                                                <tr><td colSpan="6" className="text-center py-8 text-gray-500">Tidak ada data</td></tr>
+                                            ) : (
+                                                filteredAttendance.map((att, index) => (
+                                                    <tr key={index} className="border-b hover:bg-gray-50">
+                                                        <td className="py-3 px-4">{att.nis}</td>
+                                                        <td className="py-3 px-4 font-medium text-gray-800">{att.name}</td>
+                                                        <td className="py-3 px-4">{att.class}</td>
+                                                        <td className="py-3 px-4">{att.subject}</td>
+                                                        <td className="py-3 px-4"><span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${ att.status === 'hadir' ? 'bg-green-100 text-green-800' : att.status === 'izin' ? 'bg-blue-100 text-blue-800' : att.status === 'sakit' ? 'bg-yellow-100 text-yellow-800' : att.status === 'kt' ? 'bg-gray-100 text-gray-800' : 'bg-red-100 text-red-800' }`}>{att.status}</span></td>
+                                                        <td className="py-3 px-4">{att.date}</td>
+                                                    </tr>
+                                                ))
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 transform animate-slideUp">
+                                <div className="flex justify-between items-center mb-4">
+                                  <h3 className="text-xl font-bold text-gray-800">
+                                    {modalType === "add" && "Tambah Siswa Baru"}
+                                    {modalType === "edit" && "Edit Data Siswa"}
+                                    {modalType === "delete" && "Konfirmasi Hapus Siswa"}
+                                    {modalType === "addSubject" && "Tambah Mapel Baru"}
+                                    {modalType === "deleteSubject" && "Konfirmasi Hapus Mapel"}
+                                  </h3>
+                                  <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 text-3xl">&times;</button>
+                                </div>
+                                {modalType === 'add' || modalType === 'edit' ? (
+                                    <form onSubmit={handleStudentSubmit} className="space-y-4">
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">NIS</label><input type="text" name="nis" defaultValue={currentStudent?.nis || ''} className="w-full px-4 py-2 border border-gray-300 rounded-lg" required /></div>
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Nama Lengkap</label><input type="text" name="name" defaultValue={currentStudent?.name || ''} className="w-full px-4 py-2 border border-gray-300 rounded-lg" required /></div>
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Kelas</label><select name="class" defaultValue={currentStudent?.class || ''} className="w-full px-4 py-2 border border-gray-300 rounded-lg" required><option value="">Pilih Kelas</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></div>
+                                        <div className="flex space-x-3 pt-2"><button type="button" onClick={closeModal} className="flex-1 px-4 py-2 border rounded-lg">Batal</button><button type="submit" className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">{modalType === 'edit' ? 'Update' : 'Simpan'}</button></div>
+                                    </form>
+                                ) : modalType === 'delete' ? (
+                                    <div className="text-center"><p className="mb-4">Anda yakin ingin menghapus <strong>{currentStudent?.name}</strong>?</p><div className="flex space-x-3"><button onClick={closeModal} className="flex-1 px-4 py-2 border rounded-lg">Batal</button><button onClick={() => deleteStudent(currentStudent.nis)} className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Hapus</button></div></div>
+                                ) : modalType === 'addSubject' ? (
+                                    <form onSubmit={handleSubjectSubmit} className="space-y-4">
+                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">Nama Mata Pelajaran</label><input type="text" name="subject" className="w-full px-4 py-2 border border-gray-300 rounded-lg" required autoFocus /></div>
+                                        <div className="flex space-x-3 pt-2"><button type="button" onClick={closeModal} className="flex-1 px-4 py-2 border rounded-lg">Batal</button><button type="submit" className="flex-1 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">Simpan</button></div>
+                                    </form>
+                                ) : modalType === 'deleteSubject' && (
+                                     <div className="text-center"><p className="mb-4">Anda yakin ingin menghapus <strong>{currentSubject}</strong>?</p><div className="flex space-x-3"><button onClick={closeModal} className="flex-1 px-4 py-2 border rounded-lg">Batal</button><button onClick={() => deleteSubject(currentSubject)} className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700">Hapus</button></div></div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+        
+        const App = () => {
+            const [isLoggedIn, setIsLoggedIn] = useState(!!getFromLocalStorage('isLoggedIn', false));
+            const [notification, setNotification] = useState({ show: false, message: "", type: "" });
+
+            const showNotification = (message, type = "success") => {
+                setNotification({ show: true, message, type });
+                setTimeout(() => setNotification({ show: false, message: "", type: "" }), 3000);
+            };
+
+            const handleLogin = () => {
+                setInLocalStorage('isLoggedIn', true);
+                setIsLoggedIn(true);
+            };
+
+            const handleLogout = () => {
+                localStorage.removeItem('isLoggedIn');
+                localStorage.removeItem('lastMenu');
+                setIsLoggedIn(false);
+                showNotification("Anda telah logout.", "success");
+            };
+
+            return (
+                <React.Fragment>
+                    {notification.show && (
+                        <div className={`fixed top-5 right-5 z-50 px-6 py-3 rounded-lg shadow-lg text-white ${
+                            notification.type === 'success' ? 'bg-green-500' :
+                            notification.type === 'error' ? 'bg-red-500' :
+                            notification.type === 'info' ? 'bg-blue-500' : 
+                            notification.type === 'warning' ? 'bg-yellow-500' : 'bg-gray-800'
+                        } animate-slideIn`}>
+                            {notification.message}
+                        </div>
+                    )}
+                    {isLoggedIn ? <MainApp onLogout={handleLogout} showNotification={showNotification} /> : <LoginPage onLogin={handleLogin} showNotification={showNotification} />}
+                </React.Fragment>
+            );
+        };
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
